@@ -1,6 +1,6 @@
 import discord
 from discord.ext import commands
-from discord_slash import SlashCommand, SlashContext
+from discord import app_commands
 import aiosqlite
 from datetime import datetime
 
@@ -8,7 +8,18 @@ intents = discord.Intents.default()
 intents.message_content = True  # Enable reading message content if needed
 
 bot = commands.Bot(command_prefix='/', intents=intents)
-slash = SlashCommand(bot, sync_commands=True)
+
+class MyClient(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def on_ready(self):
+        await self.tree.sync()
+        await init_db()
+        print(f'Logged in as {self.user}')
+
+client = MyClient()
 
 async def init_db():
     async with aiosqlite.connect('worktime.db') as db:
@@ -22,14 +33,9 @@ async def init_db():
         ''')
         await db.commit()
 
-@bot.event
-async def on_ready():
-    await init_db()
-    print(f'Logged in as {bot.user}')
-
-@slash.slash(name="fichar")
-async def _fichar(ctx: SlashContext):
-    user_id = ctx.author.id
+@client.tree.command(name="fichar")
+async def _fichar(interaction: discord.Interaction):
+    user_id = interaction.user.id
     async with aiosqlite.connect('worktime.db') as db:
         cursor = await db.execute('SELECT start_time, end_time, total_time FROM worktime WHERE user_id = ?', (user_id,))
         row = await cursor.fetchone()
@@ -37,20 +43,20 @@ async def _fichar(ctx: SlashContext):
         if row is None or row[1] is not None:  # If not working, start working
             await db.execute('REPLACE INTO worktime (user_id, start_time, end_time, total_time) VALUES (?, ?, ?, ?)',
                              (user_id, datetime.utcnow(), None, row[2] if row else 0))
-            await ctx.send(f'You are now marked as working.', hidden=True)
+            await interaction.response.send_message(f'You are now marked as working.', ephemeral=True)
         else:  # If already working, stop working
             start_time = datetime.fromisoformat(row[0])
             end_time = datetime.utcnow()
             total_time = (end_time - start_time).seconds + row[2]
             await db.execute('UPDATE worktime SET end_time = ?, total_time = ? WHERE user_id = ?',
                              (end_time, total_time, user_id))
-            await ctx.send(f'You are now marked as not working.', hidden=True)
+            await interaction.response.send_message(f'You are now marked as not working.', ephemeral=True)
 
         await db.commit()
 
-@slash.slash(name="worktime")
-@commands.has_permissions(administrator=True)
-async def _worktime(ctx: SlashContext, user: discord.User):
+@client.tree.command(name="worktime")
+@app_commands.checks.has_permissions(administrator=True)
+async def _worktime(interaction: discord.Interaction, user: discord.User):
     user_id = user.id
     async with aiosqlite.connect('worktime.db') as db:
         cursor = await db.execute('SELECT total_time FROM worktime WHERE user_id = ?', (user_id,))
@@ -59,16 +65,16 @@ async def _worktime(ctx: SlashContext, user: discord.User):
         if row:
             total_hours = row[0] // 3600
             total_minutes = (row[0] % 3600) // 60
-            await ctx.send(f'{user.mention} has worked for {total_hours} hours and {total_minutes} minutes.', hidden=True)
+            await interaction.response.send_message(f'{user.mention} has worked for {total_hours} hours and {total_minutes} minutes.', ephemeral=True)
         else:
-            await ctx.send(f'{user.mention} has no recorded work time.', hidden=True)
+            await interaction.response.send_message(f'{user.mention} has no recorded work time.', ephemeral=True)
 
-@slash.slash(name="cleardb")
-@commands.has_permissions(administrator=True)
-async def _cleardb(ctx: SlashContext):
+@client.tree.command(name="cleardb")
+@app_commands.checks.has_permissions(administrator=True)
+async def _cleardb(interaction: discord.Interaction):
     async with aiosqlite.connect('worktime.db') as db:
         await db.execute('DELETE FROM worktime')
         await db.commit()
-    await ctx.send('The database has been cleared.', hidden=True)
+    await interaction.response.send_message('The database has been cleared.', ephemeral=True)
 
-bot.run('')
+client.run('')
