@@ -1,9 +1,14 @@
 import discord
 from discord.ext import commands
+from discord_slash import SlashCommand, SlashContext
 import aiosqlite
 from datetime import datetime
 
-bot = commands.Bot(command_prefix='/')
+intents = discord.Intents.default()
+intents.message_content = True  # Enable reading message content if needed
+
+bot = commands.Bot(command_prefix='/', intents=intents)
+slash = SlashCommand(bot, sync_commands=True)
 
 async def init_db():
     async with aiosqlite.connect('worktime.db') as db:
@@ -22,8 +27,8 @@ async def on_ready():
     await init_db()
     print(f'Logged in as {bot.user}')
 
-@bot.command()
-async def fichar(ctx):
+@slash.slash(name="fichar")
+async def _fichar(ctx: SlashContext):
     user_id = ctx.author.id
     async with aiosqlite.connect('worktime.db') as db:
         cursor = await db.execute('SELECT start_time, end_time, total_time FROM worktime WHERE user_id = ?', (user_id,))
@@ -32,20 +37,20 @@ async def fichar(ctx):
         if row is None or row[1] is not None:  # If not working, start working
             await db.execute('REPLACE INTO worktime (user_id, start_time, end_time, total_time) VALUES (?, ?, ?, ?)',
                              (user_id, datetime.utcnow(), None, row[2] if row else 0))
-            await ctx.send(f'{ctx.author.mention} you are now marked as working.')
+            await ctx.send(f'You are now marked as working.', hidden=True)
         else:  # If already working, stop working
             start_time = datetime.fromisoformat(row[0])
             end_time = datetime.utcnow()
             total_time = (end_time - start_time).seconds + row[2]
             await db.execute('UPDATE worktime SET end_time = ?, total_time = ? WHERE user_id = ?',
                              (end_time, total_time, user_id))
-            await ctx.send(f'{ctx.author.mention} you are now marked as not working.')
+            await ctx.send(f'You are now marked as not working.', hidden=True)
 
         await db.commit()
 
-@bot.command()
+@slash.slash(name="worktime")
 @commands.has_permissions(administrator=True)
-async def worktime(ctx, user: discord.User):
+async def _worktime(ctx: SlashContext, user: discord.User):
     user_id = user.id
     async with aiosqlite.connect('worktime.db') as db:
         cursor = await db.execute('SELECT total_time FROM worktime WHERE user_id = ?', (user_id,))
@@ -54,16 +59,16 @@ async def worktime(ctx, user: discord.User):
         if row:
             total_hours = row[0] // 3600
             total_minutes = (row[0] % 3600) // 60
-            await ctx.send(f'{user.mention} has worked for {total_hours} hours and {total_minutes} minutes.')
+            await ctx.send(f'{user.mention} has worked for {total_hours} hours and {total_minutes} minutes.', hidden=True)
         else:
-            await ctx.send(f'{user.mention} has no recorded work time.')
+            await ctx.send(f'{user.mention} has no recorded work time.', hidden=True)
 
-@bot.command()
+@slash.slash(name="cleardb")
 @commands.has_permissions(administrator=True)
-async def cleardb(ctx):
+async def _cleardb(ctx: SlashContext):
     async with aiosqlite.connect('worktime.db') as db:
         await db.execute('DELETE FROM worktime')
         await db.commit()
-    await ctx.send('The database has been cleared.')
+    await ctx.send('The database has been cleared.', hidden=True)
 
 bot.run('')
