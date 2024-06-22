@@ -2,16 +2,12 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import aiosqlite
-import re
 from datetime import datetime, timezone
 
 intents = discord.Intents.default()
-intents.message_content = True  # Make sure to enable message content intent
+intents.message_content = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
-
-CATEGORY_ID = 1253862670235467886
-CHANNEL_ID = 1253862699972952146
 
 async def init_db():
     async with aiosqlite.connect('worktime.db') as db:
@@ -23,52 +19,13 @@ async def init_db():
                 total_time INTEGER
             )
         ''')
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS sales (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_name TEXT,
-                item TEXT,
-                quantity INTEGER,
-                total_price REAL,
-                timestamp TEXT
-            )
-        ''')
         await db.commit()
 
 @bot.event
 async def on_ready():
     await init_db()
-    try:
-        synced = await bot.tree.sync()
-        print(f'Synced {len(synced)} commands')
-        for command in synced:
-            print(f'Command: {command.name}')
-    except Exception as e:
-        print(f'Failed to sync commands: {e}')
+    await bot.tree.sync()
     print(f'Logged in as {bot.user}')
-
-@bot.event
-async def on_message(message):
-    if message.channel.id == CHANNEL_ID and message.channel.category_id == CATEGORY_ID:
-        match = re.match(r'New Order by (.+)\n\nItems Ordered:\n((?:.+\n)+)\nTotal Price: €(\d+)', message.content)
-        if match:
-            employee_name = match.group(1)
-            items = match.group(2)
-            total_price = float(match.group(3))
-            
-            item_pattern = r'(.+) \(Quantity: (\d+), Total: €(\d+)\)'
-            item_matches = re.findall(item_pattern, items)
-            
-            async with aiosqlite.connect('sales.db') as db:
-                for item in item_matches:
-                    item_name = item[0]
-                    quantity = int(item[1])
-                    item_total = float(item[2])
-                    await db.execute('''
-                        INSERT INTO sales (employee_name, item, quantity, total_price, timestamp)
-                        VALUES (?, ?, ?, ?, ?)
-                    ''', (employee_name, item_name, quantity, item_total, datetime.now(timezone.utc).isoformat()))
-                await db.commit()
 
 @bot.tree.command(name="fichar")
 async def _fichar(interaction: discord.Interaction):
@@ -111,24 +68,26 @@ async def _worktime(interaction: discord.Interaction, user: discord.User):
 async def _cleardb(interaction: discord.Interaction):
     async with aiosqlite.connect('worktime.db') as db:
         await db.execute('DELETE FROM worktime')
-        await db.execute('DELETE FROM sales')
         await db.commit()
     await interaction.response.send_message('The database has been cleared.', ephemeral=True)
 
-@bot.tree.command(name="dump-money")
+@bot.tree.command(name="dump")
 @app_commands.checks.has_permissions(administrator=True)
-async def _dump_money(interaction: discord.Interaction):
-    async with aiosqlite.connect('sales.db') as db:
-        cursor = await db.execute('SELECT employee_name, SUM(total_price) FROM sales GROUP BY employee_name')
+async def _dump(interaction: discord.Interaction):
+    async with aiosqlite.connect('worktime.db') as db:
+        cursor = await db.execute('SELECT user_id, total_time FROM worktime')
         rows = await cursor.fetchall()
 
         if not rows:
-            await interaction.response.send_message('No sales records found.', ephemeral=True)
+            await interaction.response.send_message('No work records found.', ephemeral=True)
             return
 
-        report = "Sales Summary:\n\n"
+        report = "Worker Summary:\n\n"
         for row in rows:
-            report += f'{row[0]} has made €{row[1]:.2f}\n'
+            user = await bot.fetch_user(row[0])
+            total_hours = row[1] // 3600
+            total_minutes = (row[1] % 3600) // 60
+            report += f'{user.name}#{user.discriminator} has worked for {total_hours} hours and {total_minutes} minutes.\n'
 
         await interaction.response.send_message(report, ephemeral=True)
 
