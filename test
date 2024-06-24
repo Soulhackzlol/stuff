@@ -68,7 +68,8 @@ async def on_ready():
     await init_db()
     try:
         await bot.tree.sync()  # Sync globally
-        print(f'Synced global commands')
+        await bot.tree.sync(guild=discord.Object(id=GUILD_ID))  # Sync specifically to the guild
+        print(f'Synced commands')
     except Exception as e:
         print(f'Failed to sync commands: {e}')
     print(f'Logged in as {bot.user}')
