@@ -11,9 +11,34 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
-GUILD_ID = 123456789012345678  # Replace with your server ID
-CATEGORY_ID = 987654321098765432  # Replace with the ID of the category where ticket channels will be created
-STAFF_ROLE_ID = 876543210987654321  # Replace with the ID of the role for staff members who will manage the tickets
+GUILD_ID = 1252250439194247310
+CATEGORY_ID = 1254727085633830993  # Replace with the ID of the category where ticket channels will be created
+STAFF_ROLE_ID = 1254725666801324124  # Replace with the ID of the role for staff members who will manage the tickets
+
+class TicketModal(discord.ui.Modal, title='Create Ticket'):
+    description = discord.ui.TextInput(label='Description', style=discord.TextStyle.long, placeholder='Describe your issue...', required=True)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
+        description = self.description.value
+        guild = interaction.guild
+        category = guild.get_channel(CATEGORY_ID)
+        
+        # Create a private text channel for the ticket
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.get_role(STAFF_ROLE_ID): discord.PermissionOverwrite(read_messages=True),
+            interaction.user: discord.PermissionOverwrite(read_messages=True)
+        }
+        channel = await category.create_text_channel(name=f'ticket-{interaction.user.name}', overwrites=overwrites)
+        
+        async with aiosqlite.connect('worktime.db') as db:
+            await db.execute('INSERT INTO tickets (user_id, channel_id, status, description, created_at) VALUES (?, ?, ?, ?, ?)',
+                             (user_id, channel.id, 'open', description, datetime.now(timezone.utc)))
+            await db.commit()
+        
+        await channel.send(f'Ticket created by {interaction.user.mention}\n\nDescription: {description}')
+        await interaction.response.send_message('Your ticket has been created.', ephemeral=True)
 
 async def init_db():
     async with aiosqlite.connect('worktime.db') as db:
@@ -41,7 +66,11 @@ async def init_db():
 @bot.event
 async def on_ready():
     await init_db()
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+    try:
+        await bot.tree.sync()  # Sync globally
+        print(f'Synced global commands')
+    except Exception as e:
+        print(f'Failed to sync commands: {e}')
     print(f'Logged in as {bot.user}')
 
 @bot.tree.command(name="fichar", guild=discord.Object(id=GUILD_ID))
@@ -110,26 +139,8 @@ async def _dump(interaction: discord.Interaction):
 
 # Ticket system commands
 @bot.tree.command(name="create_ticket", guild=discord.Object(id=GUILD_ID))
-async def _create_ticket(interaction: discord.Interaction, description: str):
-    user_id = interaction.user.id
-    guild = interaction.guild
-    category = guild.get_channel(CATEGORY_ID)
-    
-    # Create a private text channel for the ticket
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(read_messages=False),
-        guild.get_role(STAFF_ROLE_ID): discord.PermissionOverwrite(read_messages=True),
-        interaction.user: discord.PermissionOverwrite(read_messages=True)
-    }
-    channel = await category.create_text_channel(name=f'ticket-{interaction.user.name}', overwrites=overwrites)
-    
-    async with aiosqlite.connect('worktime.db') as db:
-        await db.execute('INSERT INTO tickets (user_id, channel_id, status, description, created_at) VALUES (?, ?, ?, ?, ?)',
-                         (user_id, channel.id, 'open', description, datetime.now(timezone.utc)))
-        await db.commit()
-    
-    await channel.send(f'Ticket created by {interaction.user.mention}\n\nDescription: {description}')
-    await interaction.response.send_message('Your ticket has been created.', ephemeral=True)
+async def _create_ticket(interaction: discord.Interaction):
+    await interaction.response.send_modal(TicketModal())
 
 @bot.tree.command(name="close_ticket", guild=discord.Object(id=GUILD_ID))
 async def _close_ticket(interaction: discord.Interaction, ticket_id: int):
