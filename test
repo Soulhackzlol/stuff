@@ -6,8 +6,14 @@ from datetime import datetime, timezone
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.guilds = True
+intents.members = True
 
 bot = commands.Bot(command_prefix='/', intents=intents)
+
+GUILD_ID = 123456789012345678  # Replace with your server ID
+CATEGORY_ID = 987654321098765432  # Replace with the ID of the category where ticket channels will be created
+STAFF_ROLE_ID = 876543210987654321  # Replace with the ID of the role for staff members who will manage the tickets
 
 async def init_db():
     async with aiosqlite.connect('worktime.db') as db:
@@ -23,6 +29,7 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS tickets (
                 ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER,
+                channel_id INTEGER,
                 status TEXT,
                 description TEXT,
                 created_at TEXT,
@@ -34,10 +41,10 @@ async def init_db():
 @bot.event
 async def on_ready():
     await init_db()
-    await bot.tree.sync()
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     print(f'Logged in as {bot.user}')
 
-@bot.tree.command(name="fichar")
+@bot.tree.command(name="fichar", guild=discord.Object(id=GUILD_ID))
 async def _fichar(interaction: discord.Interaction):
     user_id = interaction.user.id
     async with aiosqlite.connect('worktime.db') as db:
@@ -58,7 +65,7 @@ async def _fichar(interaction: discord.Interaction):
 
         await db.commit()
 
-@bot.tree.command(name="worktime")
+@bot.tree.command(name="worktime", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def _worktime(interaction: discord.Interaction, user: discord.User):
     user_id = user.id
@@ -73,7 +80,7 @@ async def _worktime(interaction: discord.Interaction, user: discord.User):
         else:
             await interaction.response.send_message(f'{user.mention} has no recorded work time.', ephemeral=True)
 
-@bot.tree.command(name="cleardb")
+@bot.tree.command(name="cleardb", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def _cleardb(interaction: discord.Interaction):
     async with aiosqlite.connect('worktime.db') as db:
@@ -81,7 +88,7 @@ async def _cleardb(interaction: discord.Interaction):
         await db.commit()
     await interaction.response.send_message('The database has been cleared.', ephemeral=True)
 
-@bot.tree.command(name="dump")
+@bot.tree.command(name="dump", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def _dump(interaction: discord.Interaction):
     async with aiosqlite.connect('worktime.db') as db:
@@ -102,52 +109,54 @@ async def _dump(interaction: discord.Interaction):
         await interaction.response.send_message(report, ephemeral=True)
 
 # Ticket system commands
-@bot.tree.command(name="create_ticket")
+@bot.tree.command(name="create_ticket", guild=discord.Object(id=GUILD_ID))
 async def _create_ticket(interaction: discord.Interaction, description: str):
     user_id = interaction.user.id
+    guild = interaction.guild
+    category = guild.get_channel(CATEGORY_ID)
+    
+    # Create a private text channel for the ticket
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        guild.get_role(STAFF_ROLE_ID): discord.PermissionOverwrite(read_messages=True),
+        interaction.user: discord.PermissionOverwrite(read_messages=True)
+    }
+    channel = await category.create_text_channel(name=f'ticket-{interaction.user.name}', overwrites=overwrites)
+    
     async with aiosqlite.connect('worktime.db') as db:
-        await db.execute('INSERT INTO tickets (user_id, status, description, created_at) VALUES (?, ?, ?, ?)',
-                         (user_id, 'open', description, datetime.now(timezone.utc)))
+        await db.execute('INSERT INTO tickets (user_id, channel_id, status, description, created_at) VALUES (?, ?, ?, ?, ?)',
+                         (user_id, channel.id, 'open', description, datetime.now(timezone.utc)))
         await db.commit()
+    
+    await channel.send(f'Ticket created by {interaction.user.mention}\n\nDescription: {description}')
     await interaction.response.send_message('Your ticket has been created.', ephemeral=True)
 
-@bot.tree.command(name="view_tickets")
-async def _view_tickets(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    async with aiosqlite.connect('worktime.db') as db:
-        cursor = await db.execute('SELECT ticket_id, status, description, created_at, closed_at FROM tickets WHERE user_id = ?', (user_id,))
-        rows = await cursor.fetchall()
-
-        if not rows:
-            await interaction.response.send_message('You have no tickets.', ephemeral=True)
-            return
-
-        report = "Your Tickets:\n\n"
-        for row in rows:
-            report += f'Ticket ID: {row[0]}\nStatus: {row[1]}\nDescription: {row[2]}\nCreated At: {row[3]}\nClosed At: {row[4] if row[4] else "N/A"}\n\n'
-
-        await interaction.response.send_message(report, ephemeral=True)
-
-@bot.tree.command(name="close_ticket")
+@bot.tree.command(name="close_ticket", guild=discord.Object(id=GUILD_ID))
 async def _close_ticket(interaction: discord.Interaction, ticket_id: int):
     user_id = interaction.user.id
     async with aiosqlite.connect('worktime.db') as db:
-        cursor = await db.execute('SELECT status FROM tickets WHERE ticket_id = ? AND user_id = ?', (ticket_id, user_id))
+        cursor = await db.execute('SELECT channel_id, status FROM tickets WHERE ticket_id = ? AND user_id = ?', (ticket_id, user_id))
         row = await cursor.fetchone()
 
-        if row and row[0] == 'open':
+        if row and row[1] == 'open':
             await db.execute('UPDATE tickets SET status = ?, closed_at = ? WHERE ticket_id = ? AND user_id = ?',
                              ('closed', datetime.now(timezone.utc), ticket_id, user_id))
             await db.commit()
+
+            # Delete the channel
+            channel = interaction.guild.get_channel(row[0])
+            if channel:
+                await channel.delete()
+
             await interaction.response.send_message('Your ticket has been closed.', ephemeral=True)
         else:
             await interaction.response.send_message('Ticket not found or already closed.', ephemeral=True)
 
-@bot.tree.command(name="manage_tickets")
+@bot.tree.command(name="manage_tickets", guild=discord.Object(id=GUILD_ID))
 @app_commands.checks.has_permissions(administrator=True)
 async def _manage_tickets(interaction: discord.Interaction):
     async with aiosqlite.connect('worktime.db') as db:
-        cursor = await db.execute('SELECT ticket_id, user_id, status, description, created_at, closed_at FROM tickets')
+        cursor = await db.execute('SELECT ticket_id, user_id, channel_id, status, description, created_at, closed_at FROM tickets')
         rows = await cursor.fetchall()
 
         if not rows:
@@ -157,7 +166,8 @@ async def _manage_tickets(interaction: discord.Interaction):
         report = "All Tickets:\n\n"
         for row in rows:
             user = await bot.fetch_user(row[1])
-            report += (f'Ticket ID: {row[0]}\nUser: {user.name}#{user.discriminator}\nStatus: {row[2]}\n'
-                       f'Description: {row[3]}\nCreated At: {row[4]}\nClosed At: {row[5] if row[5] else "N/A"}\n\n')
+            report += (f'Ticket ID: {row[0]}\nUser: {user.name}#{user.discriminator}\nStatus: {row[3]}\n'
+                       f'Description: {row[4]}\nCreated At: {row[5]}\nClosed At: {row[6] if row[6] else "N/A"}\n'
+                       f'Channel: <#{row[2]}>\n\n')
 
         await interaction.response.send_message(report, ephemeral=True)
