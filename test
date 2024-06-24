@@ -12,8 +12,8 @@ intents.members = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
 GUILD_ID = 1252250439194247310
-CATEGORY_ID = 1254727085633830993  # Replace with the ID of the category where ticket channels will be created
-STAFF_ROLE_ID = 1254725666801324124  # Replace with the ID of the role for staff members who will manage the tickets
+CATEGORY_ID = 1254727085633830993
+STAFF_ROLE_ID = 1254725666801324124
 
 class TicketModal(discord.ui.Modal, title='Create Ticket'):
     description = discord.ui.TextInput(label='Description', style=discord.TextStyle.long, placeholder='Describe your issue...', required=True)
