@@ -19,6 +19,16 @@ async def init_db():
                 total_time INTEGER
             )
         ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS tickets (
+                ticket_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                status TEXT,
+                description TEXT,
+                created_at TEXT,
+                closed_at TEXT
+            )
+        ''')
         await db.commit()
 
 @bot.event
@@ -91,4 +101,63 @@ async def _dump(interaction: discord.Interaction):
 
         await interaction.response.send_message(report, ephemeral=True)
 
-bot.run('')
+# Ticket system commands
+@bot.tree.command(name="create_ticket")
+async def _create_ticket(interaction: discord.Interaction, description: str):
+    user_id = interaction.user.id
+    async with aiosqlite.connect('worktime.db') as db:
+        await db.execute('INSERT INTO tickets (user_id, status, description, created_at) VALUES (?, ?, ?, ?)',
+                         (user_id, 'open', description, datetime.now(timezone.utc)))
+        await db.commit()
+    await interaction.response.send_message('Your ticket has been created.', ephemeral=True)
+
+@bot.tree.command(name="view_tickets")
+async def _view_tickets(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    async with aiosqlite.connect('worktime.db') as db:
+        cursor = await db.execute('SELECT ticket_id, status, description, created_at, closed_at FROM tickets WHERE user_id = ?', (user_id,))
+        rows = await cursor.fetchall()
+
+        if not rows:
+            await interaction.response.send_message('You have no tickets.', ephemeral=True)
+            return
+
+        report = "Your Tickets:\n\n"
+        for row in rows:
+            report += f'Ticket ID: {row[0]}\nStatus: {row[1]}\nDescription: {row[2]}\nCreated At: {row[3]}\nClosed At: {row[4] if row[4] else "N/A"}\n\n'
+
+        await interaction.response.send_message(report, ephemeral=True)
+
+@bot.tree.command(name="close_ticket")
+async def _close_ticket(interaction: discord.Interaction, ticket_id: int):
+    user_id = interaction.user.id
+    async with aiosqlite.connect('worktime.db') as db:
+        cursor = await db.execute('SELECT status FROM tickets WHERE ticket_id = ? AND user_id = ?', (ticket_id, user_id))
+        row = await cursor.fetchone()
+
+        if row and row[0] == 'open':
+            await db.execute('UPDATE tickets SET status = ?, closed_at = ? WHERE ticket_id = ? AND user_id = ?',
+                             ('closed', datetime.now(timezone.utc), ticket_id, user_id))
+            await db.commit()
+            await interaction.response.send_message('Your ticket has been closed.', ephemeral=True)
+        else:
+            await interaction.response.send_message('Ticket not found or already closed.', ephemeral=True)
+
+@bot.tree.command(name="manage_tickets")
+@app_commands.checks.has_permissions(administrator=True)
+async def _manage_tickets(interaction: discord.Interaction):
+    async with aiosqlite.connect('worktime.db') as db:
+        cursor = await db.execute('SELECT ticket_id, user_id, status, description, created_at, closed_at FROM tickets')
+        rows = await cursor.fetchall()
+
+        if not rows:
+            await interaction.response.send_message('No tickets found.', ephemeral=True)
+            return
+
+        report = "All Tickets:\n\n"
+        for row in rows:
+            user = await bot.fetch_user(row[1])
+            report += (f'Ticket ID: {row[0]}\nUser: {user.name}#{user.discriminator}\nStatus: {row[2]}\n'
+                       f'Description: {row[3]}\nCreated At: {row[4]}\nClosed At: {row[5] if row[5] else "N/A"}\n\n')
+
+        await interaction.response.send_message(report, ephemeral=True)
